@@ -130,7 +130,6 @@ dmypy.json
 
 # custom
 .idea
-tmp**/
 temp/
+data/
 cookies.pkl
-**.csv

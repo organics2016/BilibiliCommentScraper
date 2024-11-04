@@ -31,16 +31,6 @@ def write_error_log(message):
         file.write(message + "\n")
 
 
-# def load_cookies(driver, cookies_file):
-#     if os.path.exists(cookies_file):
-#         with open(cookies_file, 'rb') as f:
-#             cookies = pickle.load(f)
-#         for cookie in cookies:
-#             driver.add_cookie(cookie)
-#         return True
-#     return False
-
-
 def load_cookies(cookies_file):
     if os.path.exists(cookies_file):
         with open(cookies_file, 'rb') as f:
@@ -103,13 +93,13 @@ def scroll_to_bottom(driver):
 
 
 def write_to_csv(video_id, index, parent_idx, nickname, user_id, content, time, likes):
-    file_exists = os.path.isfile(f'{video_id}.csv')
+    file_path = f'{data_dir}/{video_id}.csv'
+    create = os.path.exists(file_path)
 
-    with open(f'{video_id}.csv', mode='a', encoding=file_encoding, newline='') as csvfile:
+    with open(file_path, mode='a', encoding=file_encoding, newline='') as csvfile:
         fieldnames = ['评论ID', '父评论ID', '用户昵称', '用户ID', '评论内容', '发布时间', '点赞数']
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-
-        if not file_exists:
+        if not create:
             writer.writeheader()
 
         writer.writerow({
@@ -123,9 +113,42 @@ def write_to_csv(video_id, index, parent_idx, nickname, user_id, content, time, 
         })
 
 
-def main():
-    # 代码文件所在的文件夹内创建一个新的文件夹，作为缓存目录。如果想自行设定目录，请修改下面代码
-    current_folder = os.path.abspath('temp')
+def create_directory(directory):
+    """
+    创建指定目录，如果目录已经存在则不进行操作。
+    Args:
+        directory: 需要创建的目录路径。
+    """
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+
+
+class Progress:
+    def __init__(self):
+        self.file_path = 'temp/progress.txt'
+        self.progress_data = {"finished": []}
+
+    def get_progress(self) -> dict[str, any]:
+        if os.path.exists(self.file_path):
+            with open(self.file_path, "r", encoding=file_encoding) as f:
+                self.progress_data = json.load(f)
+
+        return self.progress_data
+
+    def save_progress(self):
+        with open(self.file_path, "w", encoding=file_encoding) as f:
+            json.dump(self.progress_data, f)
+
+    def finished(self, url):
+        self.progress_data["finished"].append(url)
+        self.save_progress()
+
+
+temp_dir = "temp"
+data_dir = "data"
+
+
+def init_driver() -> webdriver.Chrome:
     # 首次登录获取cookie文件
     cookies_file = 'cookies.pkl'
     print("测试cookies文件是否已获取。若无，请在弹出的窗口中登录b站账号，登录完成后，窗口将关闭；若有，窗口会立即关闭")
@@ -139,6 +162,7 @@ def main():
     # 设置Chrome浏览器参数
     chrome_options = Options()
     # # 将Chrome的缓存目录设置为刚刚创建的临时目录
+    current_folder = os.path.abspath(temp_dir)
     print(current_folder)
     chrome_options.add_argument(f'--user-data-dir={current_folder}')
     chrome_options.add_argument('--disable-plugins-discovery')
@@ -159,97 +183,99 @@ def main():
     for cookie in cookies:
         driver.add_cookie(cookie)
 
-    if os.path.exists("progress.txt"):
-        with open("progress.txt", "r", encoding=file_encoding) as f:
-            progress = json.load(f)
-    else:
-        progress = {"finished": []}
+    return driver
+
+
+def main():
+    # 代码文件所在的文件夹内创建一个新的文件夹，作为缓存目录。如果想自行设定目录，请修改下面代码
+
+    create_directory(temp_dir)
+    create_directory(data_dir)
+
+    driver = init_driver()
 
     with open('video_list.txt', 'r', encoding=file_encoding) as f:
         video_urls = f.read().splitlines()
 
-    diffs = set(video_urls) - set(progress["finished"])
+    progress = Progress()
+
+    diffs = set(video_urls) - set(progress.get_progress()["finished"])
 
     for url in diffs:
-        try:
-            video_id_search = re.search(r'https://www\.bilibili\.com/video/([^/?]+)', url)
-            if video_id_search:
-                video_id = video_id_search.group(1)
-                print(
-                    f'开始爬取{video_id}：先会不断向下滚动至页面最底部，以加载全部页面。对于超大评论量的视频，这一步会相当花时间，请耐心等待')
+        video_id_search = re.search(r'https://www\.bilibili\.com/video/([^/?]+)', url)
+        if video_id_search:
+            video_id = video_id_search.group(1)
+            print(
+                f'开始爬取{video_id}：先会不断向下滚动至页面最底部，以加载全部页面。对于超大评论量的视频，这一步会相当花时间，请耐心等待')
 
-            driver.get(url)
+        driver.get(url)
 
-            # 在爬取评论之前滚动到页面底部
-            scroll_to_bottom(driver)
+        # 在爬取评论之前滚动到页面底部
+        scroll_to_bottom(driver)
 
-            WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.TAG_NAME, "bili-comments")))
-            contents = driver.find_element(By.TAG_NAME, 'bili-comments').shadow_root
-            driver.implicitly_wait(10)
-            feed = contents.find_element(By.ID, 'feed')
-            bctr = feed.find_elements(By.TAG_NAME, 'bili-comment-thread-renderer')
+        WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.TAG_NAME, "bili-comments")))
+        contents = driver.find_element(By.TAG_NAME, 'bili-comments').shadow_root
+        driver.implicitly_wait(10)
+        feed = contents.find_element(By.ID, 'feed')
+        bctr = feed.find_elements(By.TAG_NAME, 'bili-comment-thread-renderer')
 
-            for i, reply_item in enumerate(bctr):
+        for i, reply_item in enumerate(bctr):
 
-                comment = reply_item.shadow_root.find_element(By.ID, 'comment').shadow_root
+            comment = reply_item.shadow_root.find_element(By.ID, 'comment').shadow_root
 
-                header = comment.find_element(By.ID, 'header')
-                userinfo = header.find_elements(By.TAG_NAME, '*')[0].shadow_root
+            header = comment.find_element(By.ID, 'header')
+            userinfo = header.find_element(By.TAG_NAME, 'bili-comment-user-info').shadow_root
+            userid = userinfo.find_element(By.ID, 'user-name').get_attribute('data-user-profile-id')
+            nickname = userinfo.find_element(By.ID, 'user-name').find_element(By.TAG_NAME, 'a').text
+
+            content = comment.find_element(By.ID, 'content')
+            contents = content.find_element(By.TAG_NAME, 'bili-rich-text').shadow_root.find_element(By.ID, 'contents')
+            comments = [e.text for e in contents.find_elements(By.TAG_NAME, '*')]
+            comments = "".join(comments)
+
+            footer = comment.find_element(By.ID, 'footer')
+            comment_action = footer.find_element(By.TAG_NAME, 'bili-comment-action-buttons-renderer').shadow_root
+            pubdate = comment_action.find_element(By.ID, 'pubdate').text
+            likes = comment_action.find_element(By.ID, 'like').find_element(By.TAG_NAME, 'span').text
+
+            write_to_csv(video_id,
+                         index=i,
+                         parent_idx=None,
+                         nickname=nickname,
+                         user_id=userid,
+                         content=comments,
+                         time=pubdate,
+                         likes=likes)
+            print(f'视频{video_id}第{i}个一级评论已写入csv。正在查看这个一级评论有没有二级评论')
+
+            # driver.execute_script("arguments[0].scrollIntoView();", reply_item)
+            # time.sleep(2)
+            replies = reply_item.shadow_root.find_element(By.ID, 'replies')
+            replies = replies.find_element(By.TAG_NAME, 'bili-comment-replies-renderer').shadow_root
+            replies = replies.find_element(By.ID, 'expander-contents')
+            replies = replies.find_elements(By.TAG_NAME, 'bili-comment-reply-renderer')
+
+            for j, reply in enumerate(replies):
+                reply = reply.shadow_root
+
+                main = reply.find_element(By.ID, 'main')
+                userinfo = main.find_element(By.TAG_NAME, 'bili-comment-user-info').shadow_root
                 userid = userinfo.find_element(By.ID, 'user-name').get_attribute('data-user-profile-id')
                 nickname = userinfo.find_element(By.ID, 'user-name').find_element(By.TAG_NAME, 'a').text
 
-                content = comment.find_element(By.ID, 'content')
-                ccc = (content.find_elements(By.TAG_NAME, '*')[0]
-                       .shadow_root.find_element(By.ID, 'contents')
-                       .find_element(By.TAG_NAME, 'span').text)
+                reply_comment = main.find_element(By.TAG_NAME, 'bili-rich-text').shadow_root
+                reply_comment = reply_comment.find_element(By.ID, 'contents')
+                reply_comment = reply_comment.find_element(By.TAG_NAME, 'span').text
 
-                footer = comment.find_element(By.ID, 'footer')
-                comment_action = footer.find_elements(By.TAG_NAME, '*')[0].shadow_root
+                footer = reply.find_element(By.ID, 'footer')
+                comment_action = footer.find_element(By.TAG_NAME, 'bili-comment-action-buttons-renderer').shadow_root
                 pubdate = comment_action.find_element(By.ID, 'pubdate').text
                 likes = comment_action.find_element(By.ID, 'like').find_element(By.TAG_NAME, 'span').text
 
-                write_to_csv(video_id,
-                             index=i,
-                             parent_idx=None,
-                             nickname=nickname,
-                             user_id=userid,
-                             content=ccc,
-                             time=pubdate,
-                             likes=likes)
-                print(f'视频{video_id}第{i}个一级评论已写入csv。正在查看这个一级评论有没有二级评论')
+                write_to_csv(video_id, f"{i}:{j}", i, nickname, userid, reply_comment, pubdate, likes)
+                print(f'视频{video_id}第{j}个二级评论已写入csv')
 
-                # driver.execute_script("arguments[0].scrollIntoView();", reply_item)
-                # time.sleep(2)
-                replies = reply_item.shadow_root.find_element(By.ID, 'replies')
-                replies = replies.find_elements(By.TAG_NAME, '*')[0].shadow_root
-                replies = replies.find_element(By.ID, 'expander-contents')
-                replies = replies.find_elements(By.TAG_NAME, 'bili-comment-reply-renderer')
-
-                for j, reply in enumerate(replies):
-                    reply = reply.shadow_root
-
-                    main = reply.find_element(By.ID, 'main')
-                    userinfo = main.find_elements(By.TAG_NAME, '*')[0].shadow_root
-                    userid = userinfo.find_element(By.ID, 'user-name').get_attribute('data-user-profile-id')
-                    nickname = userinfo.find_element(By.ID, 'user-name').find_element(By.TAG_NAME, 'a').text
-
-                    reply_comment = main.find_element(By.TAG_NAME, 'bili-rich-text').shadow_root
-                    reply_comment = reply_comment.find_element(By.ID, 'contents')
-                    reply_comment = reply_comment.find_element(By.TAG_NAME, 'span').text
-
-                    footer = reply.find_element(By.ID, 'footer')
-                    comment_action = footer.find_elements(By.TAG_NAME, '*')[0].shadow_root
-                    pubdate = comment_action.find_element(By.ID, 'pubdate').text
-                    likes = comment_action.find_element(By.ID, 'like').find_element(By.TAG_NAME, 'span').text
-
-                    write_to_csv(video_id, j, i, nickname, userid, reply_comment, pubdate, likes)
-                    print(f'视频{video_id}第{j}个二级评论已写入csv')
-
-            progress["finished"].append(url)
-        except:
-            traceback.print_exc()
-        finally:
-            driver.close()
+        progress.finished(url)
 
 
 if __name__ == "__main__":
